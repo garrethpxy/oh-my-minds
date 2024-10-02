@@ -6,14 +6,13 @@ const baseURL = process.env.BASE_URL;
 const username = process.env.API_USERNAME;
 const password = process.env.API_PASSWORD;
 const jobIds = process.env.JOB_IDS ? process.env.JOB_IDS.split(',') : [];
+const keyFilePath = process.env.GAUTH_KEY_FILE_PATH;
 
 const getSheetsClient = () => {
-  // Path to your service account key file
-  const KEYFILEPATH = '/Users/garrethpeh/projects/dev/keys/garrethautomations-358727be8249.json';
 
   // Load the service account key JSON file.
   const auth = new google.auth.GoogleAuth({
-    keyFile: KEYFILEPATH,
+    keyFile: keyFilePath,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
