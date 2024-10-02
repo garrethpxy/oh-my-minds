@@ -5,8 +5,9 @@ import 'dotenv/config';
 const baseURL = process.env.BASE_URL;
 const username = process.env.API_USERNAME;
 const password = process.env.API_PASSWORD;
-const jobIds = process.env.JOB_IDS ? process.env.JOB_IDS.split(',') : [];
 const keyFilePath = process.env.GAUTH_KEY_FILE_PATH;
+const spreadsheetId = process.env.SPREADSHEET_ID; 
+const sheetToJobIdMapping = process.env.GSHEET_TO_JOB_MAPPING ? JSON.parse(process.env.GSHEET_TO_JOB_MAPPING) : {}  
 
 const getSheetsClient = () => {
 
@@ -22,18 +23,61 @@ const getSheetsClient = () => {
   return sheets;
 };
 
-const writeToSheet = async (tasks) => {
-  const sheets = getSheetsClient();
+const spreadsheetExists = async (sheets, spreadsheetId) => {
+  try {
+    await sheets.spreadsheets.get({
+      spreadsheetId,
+    });
+    // If the request succeeds, the spreadsheet exists
+    return true;
+  } catch (error) {
+    if (error.code === 404) {
+      // Spreadsheet not found
+      console.error(`Spreadsheet with ID ${spreadsheetId} does not exist.`);
+      return false;
+    } else if (error.code === 403) {
+      // Permission denied
+      console.error(`Access denied to spreadsheet with ID ${spreadsheetId}.`);
+      throw new Error('Access denied to the spreadsheet.');
+    } else {
+      // Other errors
+      console.error('Error checking spreadsheet existence:', error);
+      throw error;
+    }
+  }
+};
 
-  const spreadsheetId = process.env.SPREADSHEET_ID; // Use environment variable
-  const sheetName = process.env.SPREADSHEET_NAME; // Replace with your sheet name if different
+const sheetExists = async (sheets, spreadsheetId, sheetName) => {
+  try {
+    // Retrieve the spreadsheet metadata
+    const response = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties.title',
+    });
 
+    // Check if the sheet name exists in the list of sheets
+    const sheet = response.data.sheets.find(
+      (s) => s.properties.title === sheetName
+    );
+
+    return !!sheet; // Returns true if the sheet exists, false otherwise
+  } catch (error) {
+    console.error('Error checking sheet existence:', error);
+    throw error;
+  }
+};
+
+const writeToSheet = async ({sheets, spreadsheetId, sheetName, rows}) => {
+  // console.log('spreadsheetId', spreadsheetId);
+  // console.log('sheetName', sheetName);
+  // console.log('rows', rows.length);  
+   
   // Prepare data for writing
-  const headers = Object.keys(tasks[0]);
+  const headers = Object.keys(rows[0]);
   const values = [headers];
 
-  tasks.forEach(task => {
-    values.push(headers.map(header => task[header]));
+  rows.forEach(row => {
+    values.push(headers.map(header => row[header]));
   });
 
   // Clear the sheet first
@@ -78,76 +122,101 @@ const formatDate = (dateString) => {
 
 const main = async () => {
 
-  await Util.login(username, password);
+  const sheets = getSheetsClient();
 
-  let tasks = [];
-
-  for (const jobId of jobIds) {
-    console.log('Starting on job:', jobId);
-
-    // Fetch resolved tasks
-    const resolvedTasks = await Util.getJobResolvedTasksByPage({
-      jobId,
-      limit: 10,
-      currentPage: 1
-    });
-    console.log('Resolved tasks count:', resolvedTasks.length);
-
-    tasks.push(...resolvedTasks);
-
-    // Fetch pending tasks
-    const pendingTasks = await Util.getJobPendingTasksByPage({
-      jobId,
-      limit: 10,
-      currentPage: 1
-    });
-    console.log('Pending tasks count:', pendingTasks.length);
-
-    tasks.push(...pendingTasks);
+  // Check if the spreadsheet exists
+  const spreadSheetCheck = await spreadsheetExists(sheets, spreadsheetId);
+  if (!spreadSheetCheck) {
+    throw new Error(`Spreadsheet with ID ${spreadsheetId} does not exist. Stopping.`);
   }
 
-  /**
-   * Current Data:
-   *   [{
-   *     submitted_at: '2024-09-19T10:02:09.615Z',
-   *     first_tag_at: '2024-09-19T10:02:07.424Z',
-   *     assigned_at: '2024-09-19T10:01:41.985Z',
-   *     items: [ [Object], [Object], [Object] ],
-   *     taskQuestionAnswers: [ [Object], [Object] ]
-   *   }]
-   */
+  await Util.login(username, password);  
 
-  const rows = [];
+  for (const sheetName in sheetToJobIdMapping) {
 
-  // Use a for...of loop to handle asynchronous operations
-  for (const task of tasks) {
-    // Access taskQuestionAnswers from the task
-    const nameAnswer = task.taskQuestionAnswers.find(
-      tq => tq.title === process.env.TQ_QUESTIONTITLE_NAME
-    );
-    const name = nameAnswer && nameAnswer.answer ? nameAnswer.answer : '';
-
-    const classAnswer = task.taskQuestionAnswers.find(
-      tq => tq.title === process.env.TQ_QUESTIONTITLE_CLASS
-    );
-    const className = classAnswer && classAnswer.answer ? classAnswer.answer : '';
-
-    // Iterate over task items
-    for (const item of task.items) {
-      rows.push({
-        'Job ID': item.job_id,
-        'Task ID': item.user_task_id,
-        'Submit Date': formatDate(task.submittedAt),
-        'Name': name,
-        'Class': className,
-        'File Name': item.filename,
-        'Answer': item.tags
-      });
+    // Check if the Sheet exists
+    const sheetCheck = await sheetExists(sheets, spreadsheetId, sheetName);
+    if (!sheetCheck) {
+      console.log(`SheetName ${sheetName} with for SS_ID ${spreadsheetId} does not exist. Skipping.`);
+      continue;
     }
+    
+    const jobIds = sheetToJobIdMapping[sheetName];
+
+    let tasks = [];
+
+    for (const jobId of jobIds) {      
+
+      console.log('Starting on job:', jobId);
+  
+      // Fetch resolved tasks
+      const resolvedTasks = await Util.getJobResolvedTasksByPage({
+        jobId,
+        limit: 10,
+        currentPage: 1
+      });
+      console.log('Resolved tasks count:', resolvedTasks.length);
+  
+      tasks.push(...resolvedTasks);
+  
+      // Fetch pending tasks
+      const pendingTasks = await Util.getJobPendingTasksByPage({
+        jobId,
+        limit: 10,
+        currentPage: 1
+      });
+      console.log('Pending tasks count:', pendingTasks.length);
+  
+      tasks.push(...pendingTasks);
+    }
+  
+    /**
+     * Current Data:
+     *   [{
+     *     submitted_at: '2024-09-19T10:02:09.615Z',
+     *     first_tag_at: '2024-09-19T10:02:07.424Z',
+     *     assigned_at: '2024-09-19T10:01:41.985Z',
+     *     items: [ [Object], [Object], [Object] ],
+     *     taskQuestionAnswers: [ [Object], [Object] ]
+     *   }]
+     */
+  
+    const rows = [];
+  
+    // Use a for...of loop to handle asynchronous operations
+    for (const task of tasks) {
+      // Access taskQuestionAnswers from the task
+      const nameAnswer = task.taskQuestionAnswers.find(
+        tq => tq.title === process.env.TQ_QUESTIONTITLE_NAME
+      );
+      const name = nameAnswer && nameAnswer.answer ? nameAnswer.answer : '';
+  
+      const classAnswer = task.taskQuestionAnswers.find(
+        tq => tq.title === process.env.TQ_QUESTIONTITLE_CLASS
+      );
+      const className = classAnswer && classAnswer.answer ? classAnswer.answer : '';
+  
+      // Iterate over task items
+      for (const item of task.items) {
+        rows.push({
+          'Job ID': item.job_id,
+          'Task ID': item.user_task_id,
+          'Submit Date': formatDate(task.submittedAt),
+          'Name': name,
+          'Class': className,
+          'File Name': item.filename,
+          'Answer': item.tags
+        });
+      }
+    }
+
+  
+    // Write all rows to the sheet at once
+    await writeToSheet({sheets, spreadsheetId, sheetName, rows});
+
   }
 
-  // Write all rows to the sheet at once
-  await writeToSheet(rows);
+  
 };
 
 main();
